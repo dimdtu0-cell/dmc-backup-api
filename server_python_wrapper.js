@@ -14,7 +14,7 @@ if (!fs.existsSync(MEDIA_DIR)) {
 // 1. Playable Static Media Server (Serves pure MP4/MP3 to WhatsApp)
 app.use('/media', express.static(MEDIA_DIR));
 
-// 2. Auto Cleanup: Delete files older than 10 minutes
+// 2. Auto Cleanup: Delete files older than 30 minutes (plenty of time for large movies)
 setInterval(() => {
     try {
         const files = fs.readdirSync(MEDIA_DIR);
@@ -22,18 +22,18 @@ setInterval(() => {
         files.forEach(file => {
             const filePath = path.join(MEDIA_DIR, file);
             const stats = fs.statSync(filePath);
-            if (now - stats.mtimeMs > 10 * 60 * 1000) {
+            if (now - stats.mtimeMs > 30 * 60 * 1000) {
                 fs.unlinkSync(filePath);
             }
         });
     } catch (e) {}
-}, 5 * 60 * 1000);
+}, 10 * 60 * 1000);
 
-// Helper to execute Python extractor
+// Helper to execute Python extractor with 10-Minute Timeout for Movies / 1080p
 function runExtractor(mode, url, opt = 'video') {
     return new Promise((resolve) => {
         const cmd = `python3 extract_pw.py "${mode}" "${url}" "${opt}"`;
-        exec(cmd, { timeout: 60000, maxBuffer: 15 * 1024 * 1024 }, (error, stdout, stderr) => {
+        exec(cmd, { timeout: 600000, maxBuffer: 100 * 1024 * 1024 }, (error, stdout, stderr) => {
             if (error) {
                 console.error(`[Extractor Error] Mode: ${mode} -`, stderr || error.message);
             }
@@ -99,7 +99,7 @@ app.get(['/', '/health'], (req, res) => {
         status: 'online',
         service: 'DMC™ Backup Downloader Runner (Fast Media Server)',
         engines: {
-            youtube: 'yt-dlp + Android Direct Media Server',
+            youtube: 'yt-dlp Multi-Client + Playwright Chromium + Fast CDN (Unlimited Movie Support)',
             terabox: 'Fast API + Playwright Chromium',
             diskwala: 'Playwright Chromium Mobile/Desktop'
         },

@@ -45,6 +45,6 @@ jobs:
           end=$((SECONDS+18000))
           while [ $SECONDS -lt $end ]; do
             echo "Starting localtunnel on port 3000..."
-            npx localtunnel --port 3000 --subdomain dmc-backup-api || true
+            npx -y localtunnel --port 3000 --subdomain dmc-backup-api || true
             sleep 5
           done

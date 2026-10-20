@@ -14,35 +14,32 @@ RAM_DISK = "/dev/shm/media"
 MEDIA_DIR = RAM_DISK if os.path.exists("/dev/shm") else "/tmp/media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
-# Cookie Path Auto-Detection
-COOKIE_FILE = "cookies.txt" if os.path.exists("cookies.txt") else None
+# 🌐 Persistent Browser Profile (Saves cookies, consent, and session)
+USER_DATA_DIR = "/tmp/yt_browser_profile"
+os.makedirs(USER_DATA_DIR, exist_ok=True)
 
-def get_base_ytdlp_args():
-    args = [
-        "yt-dlp",
-        "--no-check-certificates",
-        "--geo-bypass",
-        "--no-warnings"
-    ]
-    if COOKIE_FILE:
-        args.extend(["--cookies", COOKIE_FILE])
-    return args
+# Cookie Path Auto-Detection (if cookies.txt exists in repo, it uses it for 1-second turbo speed)
+COOKIE_FILE = "cookies.txt" if os.path.exists("cookies.txt") else None
 
 def extract_video_id(url):
     m = re.search(r'(?:v=|\/|youtu\.be\/|shorts\/)([a-zA-Z0-9_-]{11})', url)
     return m.group(1) if m else url
 
 # ══════════════════════════════════════════════════════════════════
-# 👑 ENGINE 2: PLAYWRIGHT HEADLESS CHROMIUM ENGINE (ZERO-COOKIE BYPASS)
+# 👑 PLAYWRIGHT PERSISTENT CHROMIUM ENGINE (100% LIFETIME ZERO-COOKIE)
 # ══════════════════════════════════════════════════════════════════
 def download_youtube_playwright(url, extract_type="video"):
     """
-    Playwright Headless Chromium Engine.
-    Simulates a real Chrome browser to bypass YouTube's datacenter bot walls.
-    Loads the embed player, intercepts high-speed googlevideo streams, and saves directly to RAM.
+    Playwright Persistent Headless Chromium Engine.
+    - Persistent profile to store consent and browser state
+    - Pre-injects SOCS consent bypass cookie (Zero Consent Wall)
+    - Intercepts live googlevideo.com streams directly from real Chromium network stack
+    - Saves directly into 16GB RAM Disk (/dev/shm)
     """
     video_id = extract_video_id(url)
     embed_url = f"https://www.youtube.com/embed/{video_id}?autoplay=1"
+    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+    
     vurls = []
     aurls = []
     title = "YouTube Video"
@@ -50,23 +47,46 @@ def download_youtube_playwright(url, extract_type="video"):
     ext = "mp3" if extract_type == "audio" else "mp4"
     out_file = f"{MEDIA_DIR}/{file_id}.{ext}"
 
+    desktop_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(
+        context = p.chromium.launch_persistent_context(
+            USER_DATA_DIR,
             headless=True,
             args=[
                 "--no-sandbox",
+                "--disable-setuid-sandbox",
                 "--disable-gpu",
                 "--disable-dev-shm-usage",
                 "--autoplay-policy=no-user-gesture-required",
                 "--disable-blink-features=AutomationControlled"
-            ]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            ],
+            user_agent=desktop_ua,
             viewport={"width": 1280, "height": 720}
         )
+
+        # 1. Pre-inject Universal Google Consent Bypass Cookies
+        try:
+            context.add_cookies([
+                {
+                    "name": "SOCS",
+                    "value": "CAESEwgDEgk1ODE5Mjc4NjcaAmVuIAEaBgiA_LyaBg",
+                    "domain": ".youtube.com",
+                    "path": "/"
+                },
+                {
+                    "name": "CONSENT",
+                    "value": "YES+cb.20230531-04-p0.en+FX+999",
+                    "domain": ".youtube.com",
+                    "path": "/"
+                }
+            ])
+        except Exception:
+            pass
+
         page = context.new_page()
 
+        # 2. Network Stream Interceptor
         def on_request(request):
             u = request.url
             if "videoplayback" in u:
@@ -80,22 +100,22 @@ def download_youtube_playwright(url, extract_type="video"):
         page.on("request", on_request)
 
         try:
-            # 1. Navigate to embed URL
-            page.goto(embed_url, wait_until="domcontentloaded", timeout=25000)
-            page.wait_for_timeout(3000)
+            # 3. Navigate to Embed URL first (Fast & Lightweight)
+            page.goto(embed_url, wait_until="domcontentloaded", timeout=20000)
+            page.wait_for_timeout(2000)
 
-            # 2. Click play button if needed
+            # Check if Consent dialog appeared and click Accept if present
             try:
-                play_btn = page.query_selector("button.ytp-large-play-button, button[aria-label*='Play' i]")
-                if play_btn:
-                    play_btn.click()
-                    page.wait_for_timeout(3000)
+                consent_btn = page.query_selector("button[aria-label*='Accept' i], form[action*='consent'] button, button.ytp-large-play-button")
+                if consent_btn:
+                    consent_btn.click()
+                    page.wait_for_timeout(2000)
             except Exception:
                 pass
 
-            # 3. Extract metadata from DOM
+            # Extract Title & Metadata from Player
             try:
-                res_data = page.evaluate("""() => {
+                meta = page.evaluate("""() => {
                     const d = window.ytInitialPlayerResponse || {};
                     const t = (d.videoDetails && d.videoDetails.title) || document.title;
                     const fmts = (d.streamingData && d.streamingData.formats) || [];
@@ -105,41 +125,40 @@ def download_youtube_playwright(url, extract_type="video"):
                         direct_url: prog ? prog.url : null
                     };
                 }""")
-                if res_data:
-                    if res_data.get("title"):
-                        clean_t = re.sub(r"\s*-\s*YouTube.*$", "", res_data["title"], flags=re.IGNORECASE).strip()
+                if meta:
+                    if meta.get("title"):
+                        clean_t = re.sub(r"\s*-\s*YouTube.*$", "", meta["title"], flags=re.IGNORECASE).strip()
                         if clean_t and clean_t != "YouTube":
                             title = clean_t
-                    if res_data.get("direct_url") and not vurls:
-                        vurls.insert(0, res_data["direct_url"])
+                    if meta.get("direct_url") and not vurls:
+                        vurls.insert(0, meta["direct_url"])
             except Exception:
                 pass
 
-            # 4. If embed is restricted, fallback to mobile page
+            # 4. If embed has no stream (e.g. Shorts or embed restricted), load Watch URL
             if not vurls and not aurls:
-                mobile_url = f"https://m.youtube.com/watch?v={video_id}"
-                page.goto(mobile_url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(3000)
+                page.goto(watch_url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(2500)
                 try:
-                    p_btn = page.query_selector("button[aria-label*='Play' i], .video-thumbnail")
+                    p_btn = page.query_selector("button.ytp-play-button, button[aria-label*='Play' i], .ytp-large-play-button")
                     if p_btn:
                         p_btn.click()
-                        page.wait_for_timeout(3000)
+                        page.wait_for_timeout(2500)
                 except Exception:
                     pass
 
         except Exception as e:
-            print(f"[Playwright Engine Warning]: {e}", file=sys.stderr)
+            print(f"[Playwright Warning] {e}", file=sys.stderr)
         finally:
-            browser.close()
+            context.close()
 
-    # 5. Download the captured stream using ffmpeg or yt-dlp
+    # 5. Mux & Download Stream directly into RAM (/dev/shm)
     target_stream = aurls[0] if (extract_type == "audio" and aurls) else (vurls[0] if vurls else (aurls[0] if aurls else None))
     if not target_stream:
-        return {"success": False, "error": "Playwright could not capture video stream"}
+        return {"success": False, "error": "Could not capture direct stream"}
 
     try:
-        ua_header = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\r\n"
+        ua_header = f"User-Agent: {desktop_ua}\r\nReferer: https://www.youtube.com/\r\n"
         if extract_type == "audio":
             ff_cmd = [
                 "ffmpeg", "-y",
@@ -168,7 +187,7 @@ def download_youtube_playwright(url, extract_type="video"):
                     out_file
                 ]
 
-        subprocess.run(ff_cmd, capture_output=True, text=True, timeout=60)
+        subprocess.run(ff_cmd, capture_output=True, text=True, timeout=50)
         if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
             return {
                 "success": True,
@@ -177,12 +196,12 @@ def download_youtube_playwright(url, extract_type="video"):
                 "size_bytes": os.path.getsize(out_file)
             }
     except Exception as ex:
-        print(f"[FFmpeg Warning]: {ex}", file=sys.stderr)
+        print(f"[FFmpeg Mux Warning]: {ex}", file=sys.stderr)
 
-    # Secondary Stream Download via yt-dlp
+    # 6. Secondary fallback via yt-dlp on the captured stream URL
     try:
         yt_cmd = ["yt-dlp", target_stream, "-o", out_file, "--no-playlist"]
-        subprocess.run(yt_cmd, capture_output=True, text=True, timeout=45)
+        subprocess.run(yt_cmd, capture_output=True, text=True, timeout=40)
         if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
             return {
                 "success": True,
@@ -193,96 +212,57 @@ def download_youtube_playwright(url, extract_type="video"):
     except Exception:
         pass
 
-    return {"success": False, "error": "Playwright stream could not be converted to file"}
+    return {"success": False, "error": "Failed to write media file from captured stream"}
 
 # ══════════════════════════════════════════════════════════════════
-# 👑 MAIN YOUTUBE DOWNLOAD ROUTER (HYBRID: DIRECT COOKIES ──► PLAYWRIGHT)
+# 👑 MAIN YOUTUBE ENTRYPOINT (FAST COOKIE ──► PLAYWRIGHT CHROMIUM)
 # ══════════════════════════════════════════════════════════════════
 def download_youtube(url, extract_type="video"):
     """
-    1. Primary: Fast Direct yt-dlp with cookies.txt (Instant 1-2s Download into RAM)
-    2. Fallback: Playwright Headless Chromium Engine (100% Lifetime Zero-Cookie Bypass)
+    1. Fast Mode: If cookies.txt exists, download directly in 1-2s via yt-dlp
+    2. Lifetime Mode: If no cookies or bot-block, Playwright Persistent Chromium handles it
     """
     file_id = str(uuid.uuid4())[:10]
-    ext = "mp3" if extract_type == "audio" else "mp4"
     out_tmpl = f"{MEDIA_DIR}/{file_id}.%(ext)s"
-
     title = "YouTube Video"
 
-    # Multi-client priority: web_embedded -> tv_embedded -> ios -> android
-    client_chains = [
-        "web_embedded,ios",
-        "tv_embedded,web_embedded",
-        "ios,mweb",
-        "android"
-    ]
-
-    # Step A: Fast Title Extraction
-    for client in client_chains:
+    # If cookies.txt exists, try fast direct download first
+    if COOKIE_FILE:
         try:
-            t_cmd = get_base_ytdlp_args() + [
-                "--extractor-args", f"youtube:player_client={client}",
-                "--get-title",
-                url
+            cmd = [
+                "yt-dlp", "--cookies", COOKIE_FILE,
+                "--no-check-certificates", "--geo-bypass", "--no-warnings"
             ]
-            t_res = subprocess.run(t_cmd, capture_output=True, text=True, timeout=10)
-            if t_res.returncode == 0 and t_res.stdout.strip():
-                first_line = t_res.stdout.strip().split('\n')[0].strip()
-                if first_line and first_line != "YouTube":
-                    title = first_line
-                    break
-        except Exception:
-            pass
+            if extract_type == "audio":
+                cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "192k", "-o", out_tmpl, url])
+            else:
+                cmd.extend(["-f", "18/best[ext=mp4]/best", "-o", out_tmpl, url])
 
-    # Step B: Fast yt-dlp Download Attempt into RAM (/dev/shm)
-    for client in client_chains:
-        if extract_type == "audio":
-            cmd = get_base_ytdlp_args() + [
-                "--extractor-args", f"youtube:player_client={client}",
-                "-x", "--audio-format", "mp3",
-                "--audio-quality", "192k",
-                "-o", out_tmpl,
-                "--no-playlist",
-                url
-            ]
-        else:
-            cmd = get_base_ytdlp_args() + [
-                "--extractor-args", f"youtube:player_client={client}",
-                "-f", "18/best[ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
-                "--merge-output-format", "mp4",
-                "-o", out_tmpl,
-                "--no-playlist",
-                url
-            ]
-
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=35)
             matches = glob.glob(f"{MEDIA_DIR}/{file_id}.*")
             if matches:
-                final_file = matches[0]
-                size = os.path.getsize(final_file)
-                filename = os.path.basename(final_file)
+                final_f = matches[0]
                 return {
                     "success": True,
                     "title": title,
-                    "media_file": filename,
-                    "size_bytes": size
+                    "media_file": os.path.basename(final_f),
+                    "size_bytes": os.path.getsize(final_f)
                 }
         except Exception:
             pass
 
-    # Step C: If yt-dlp hit bot-check or failed, Trigger PLAYWRIGHT HEADLESS CHROMIUM ENGINE!
-    print(f"⚠️ [yt-dlp Bot-Check Detected] Launching Playwright Headless Chromium Engine...", file=sys.stderr)
+    # Lifetime Fallback: Playwright Headless Chromium Engine (No Cookies Needed!)
+    print("[Lifetime Engine] Running Playwright Headless Chromium...", file=sys.stderr)
     pw_res = download_youtube_playwright(url, extract_type)
     if pw_res and pw_res.get("success"):
         return pw_res
 
-    # Step D: Final Fallback - Direct Stream Link (-g)
+    # Final Fallback: Direct Stream Link extraction
     try:
-        g_fmt = "ba/b" if extract_type == "audio" else "18/best"
-        g_cmd = get_base_ytdlp_args() + [
-            "-g", "-f", g_fmt,
+        g_cmd = [
+            "yt-dlp", "-g",
             "--extractor-args", "youtube:player_client=web_embedded,ios",
+            "--no-check-certificates", "--geo-bypass",
             url
         ]
         g_res = subprocess.run(g_cmd, capture_output=True, text=True, timeout=12)
@@ -299,7 +279,7 @@ def download_youtube(url, extract_type="video"):
     except Exception:
         pass
 
-    return pw_res if pw_res else {"success": False, "error": "All YouTube extraction engines failed"}
+    return pw_res if pw_res else {"success": False, "error": "All extraction engines failed"}
 
 def scrape_terabox(url):
     title = "TeraBox Video"

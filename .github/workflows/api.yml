@@ -3,7 +3,7 @@ name: DMC Backup Downloader API
 on:
   workflow_dispatch:
   schedule:
-    # සෑම පැය 5කට වරක් ස්වයංක්‍රීයව නැවත පණගැන්වේ (GitHub Limit එක පැය 6ක් බැවින් 24/7 non-stop දුවයි)
+    # සෑම පැය 5කට වරක් ස්වයංක්‍රීයව නැවත පණගැන්වේ (24/7 Non-Stop)
     - cron: '0 */5 * * *'
 
 jobs:
@@ -15,23 +15,33 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js & Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install System & Python Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg python3-pip
-          npm install express node-fetch@2
-          sudo npm install -g localtunnel
+          sudo apt-get install -y ffmpeg
+          python -m pip install --upgrade pip
+          python -m pip install playwright yt-dlp
+          python -m playwright install --with-deps chromium
 
-      - name: Install Playwright & yt-dlp
+      - name: Install Node Dependencies
         run: |
-          pip install playwright yt-dlp
-          playwright install chromium
-          sudo playwright install-deps
+          npm install express node-fetch@2 localtunnel
 
       - name: Start API Server & Keep Tunnel Alive
         run: |
           nohup node server_python_wrapper.js > api.log 2>&1 &
-          sleep 4
+          sleep 5
+          cat api.log || true
           end=$((SECONDS+18000))
           while [ $SECONDS -lt $end ]; do
             echo "Starting localtunnel on port 3000..."

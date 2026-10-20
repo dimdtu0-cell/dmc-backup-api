@@ -6,6 +6,9 @@ on:
     # සෑම පැය 5කට වරක් ස්වයංක්‍රීයව නැවත පණගැන්වේ (24/7 Non-Stop)
     - cron: '0 */5 * * *'
 
+permissions:
+  contents: write
+
 jobs:
   run-backup-api:
     runs-on: ubuntu-latest
@@ -28,23 +31,45 @@ jobs:
       - name: Install System & Python Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg curl
           python -m pip install --upgrade pip
           python -m pip install playwright yt-dlp
           python -m playwright install --with-deps chromium
 
       - name: Install Node Dependencies
         run: |
-          npm install express node-fetch@2 localtunnel
+          npm install express node-fetch@2
 
-      - name: Start API Server & Keep Tunnel Alive
+      - name: Install Cloudflare Tunnel (cloudflared)
         run: |
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Start API Server & Cloudflare Tunnel
+        run: |
+          # 1. Start Node.js API
           nohup node server_python_wrapper.js > api.log 2>&1 &
-          sleep 5
+          sleep 4
           cat api.log || true
-          end=$((SECONDS+18000))
-          while [ $SECONDS -lt $end ]; do
-            echo "Starting localtunnel on port 3000..."
-            npx -y localtunnel --port 3000 --subdomain dmc-backup-api || true
-            sleep 5
-          done
+
+          # 2. Start Cloudflare Tunnel
+          nohup cloudflared tunnel --url http://localhost:3000 > cf.log 2>&1 &
+          sleep 6
+
+          # 3. Extract and Publish Live Cloudflare URL
+          CF_URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' cf.log | head -n 1)
+          echo "=========================================="
+          echo "🎉 LIVE CLOUDFLARE BACKUP URL: $CF_URL"
+          echo "=========================================="
+
+          if [ -n "$CF_URL" ]; then
+            echo "$CF_URL" > api_url.txt
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "actions@github.com"
+            git add api_url.txt
+            git commit -m "Auto-update Cloudflare Backup URL: $CF_URL" || true
+            git push origin main || true
+          fi
+
+          # 4. Keep Tunnel Alive for ~5 hours
+          sleep 18000

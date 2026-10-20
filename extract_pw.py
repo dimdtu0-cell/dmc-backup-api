@@ -7,11 +7,13 @@ import uuid
 import glob
 import urllib.request
 import urllib.parse
-from playwright.sync_api import sync_playwright
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None
 
-# 🚀 Ultra-Fast RAM Disk Storage (16GB Runner RAM - Zero Disk Latency)
-RAM_DISK = "/dev/shm/media"
-MEDIA_DIR = RAM_DISK if os.path.exists("/dev/shm") else "/tmp/media"
+# 🚀 Express Media Directory (/tmp/media exactly matches server_python_wrapper.js)
+MEDIA_DIR = "/tmp/media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # 🌐 Persistent Browser Profile
@@ -33,7 +35,7 @@ def extract_video_id(url):
 def download_youtube_fast_stream(url, extract_type="video"):
     """
     Directly resolves high-speed CDN streams without Google Bot-Checks or Cookies.
-    Downloads at 1Gbps directly into 16GB RAM Disk (/dev/shm) in 1-2 seconds.
+    Downloads at 1Gbps directly into /tmp/media in 1-2 seconds.
     """
     try:
         ep = "ytmp3" if extract_type == "audio" else "ytmp4"
@@ -53,7 +55,7 @@ def download_youtube_fast_stream(url, extract_type="video"):
                 ext = "mp3" if extract_type == "audio" else "mp4"
                 out_file = f"{MEDIA_DIR}/{file_id}.{ext}"
 
-                # Download file directly into Runner RAM at 1Gbps speed
+                # Download file directly into Runner storage at 1Gbps speed
                 dl_req = urllib.request.Request(
                     dl_url,
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -92,8 +94,10 @@ def download_youtube_ytdlp(url, extract_type="video"):
     out_tmpl = f"{MEDIA_DIR}/{file_id}.%(ext)s"
     cmd = [
         "yt-dlp",
+        "--extractor-args", "youtube:player_client=web_embedded,ios,tv_embedded",
         "--no-check-certificates",
         "--geo-bypass",
+        "--no-playlist",
         "--no-warnings"
     ]
     if COOKIE_FILE:
@@ -190,6 +194,9 @@ def scrape_terabox(url):
                         }
     except Exception:
         pass
+
+    if not sync_playwright:
+        return {"success": False, "error": "Playwright is not available"}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"])
@@ -303,6 +310,9 @@ def scrape_diskwala(url):
     title = "DiskWala Video"
     vurls = []
     size_bytes = 0
+
+    if not sync_playwright:
+        return {"success": False, "error": "Playwright is not available"}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"])

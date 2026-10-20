@@ -1,0 +1,40 @@
+name: DMC Backup Downloader API
+
+on:
+  workflow_dispatch:
+  schedule:
+    # සෑම පැය 5කට වරක් ස්වයංක්‍රීයව නැවත පණගැන්වේ (GitHub Limit එක පැය 6ක් බැවින් 24/7 non-stop දුවයි)
+    - cron: '0 */5 * * *'
+
+jobs:
+  run-backup-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js & Python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg python3-pip
+          npm install express node-fetch@2
+          sudo npm install -g localtunnel
+
+      - name: Install Playwright & yt-dlp
+        run: |
+          pip install playwright yt-dlp
+          playwright install chromium
+          sudo playwright install-deps
+
+      - name: Start API Server & Keep Tunnel Alive
+        run: |
+          nohup node server_python_wrapper.js > api.log 2>&1 &
+          sleep 4
+          end=$((SECONDS+18000))
+          while [ $SECONDS -lt $end ]; do
+            echo "Starting localtunnel on port 3000..."
+            npx localtunnel --port 3000 --subdomain dmc-backup-api || true
+            sleep 5
+          done

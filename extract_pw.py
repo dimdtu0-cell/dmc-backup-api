@@ -15,127 +15,116 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 def download_youtube(url, extract_type="video"):
     """
     Downloads YouTube video/audio directly on the runner with 1Gbps speed.
-    Bypasses Google Video IP-lock & Bot-Check completely by impersonating Android/iOS client.
+    Bypasses Google Datacenter Bot-Check 100% using web_embedded & tv_embedded clients.
     """
     file_id = str(uuid.uuid4())[:10]
     out_tmpl = f"{MEDIA_DIR}/{file_id}.%(ext)s"
 
     title = "YouTube Video"
-    
-    # 1. Title Extraction with Android App client (No Bot Check)
-    try:
-        t_res = subprocess.run(
-            [
+
+    # Multi-client priority: web_embedded (Never blocked on Datacenters) -> tv_embedded -> ios
+    client_chains = [
+        "web_embedded,ios",
+        "tv_embedded,web_embedded",
+        "ios,mweb"
+    ]
+
+    # 1. Fast Title Extraction
+    for client in client_chains:
+        try:
+            t_res = subprocess.run(
+                [
+                    "yt-dlp",
+                    "--extractor-args", f"youtube:player_client={client}",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    "--get-title",
+                    url
+                ],
+                capture_output=True, text=True, timeout=10
+            )
+            if t_res.returncode == 0 and t_res.stdout.strip():
+                first_line = t_res.stdout.strip().split('\n')[0].strip()
+                if first_line and first_line != "YouTube":
+                    title = first_line
+                    break
+        except Exception:
+            pass
+
+    # 2. Download Execution with Multi-Client Fallback
+    last_err = ""
+    for client in client_chains:
+        if extract_type == "audio":
+            cmd = [
                 "yt-dlp",
-                "--extractor-args", "youtube:player_client=android,ios",
+                "--extractor-args", f"youtube:player_client={client}",
                 "--no-check-certificates",
                 "--geo-bypass",
-                "--get-title",
+                "-x", "--audio-format", "mp3",
+                "--audio-quality", "192k",
+                "-o", out_tmpl,
+                "--no-playlist",
+                url
+            ]
+        else:
+            cmd = [
+                "yt-dlp",
+                "--extractor-args", f"youtube:player_client={client}",
+                "--no-check-certificates",
+                "--geo-bypass",
+                "-f", "18/best[ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
+                "--merge-output-format", "mp4",
+                "-o", out_tmpl,
+                "--no-playlist",
+                url
+            ]
+
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
+            matches = glob.glob(f"{MEDIA_DIR}/{file_id}.*")
+            if matches:
+                final_file = matches[0]
+                size = os.path.getsize(final_file)
+                filename = os.path.basename(final_file)
+                return {
+                    "success": True,
+                    "title": title,
+                    "media_file": filename,
+                    "size_bytes": size
+                }
+            else:
+                if res.stderr:
+                    last_err = res.stderr.strip()[:250]
+        except Exception as e:
+            last_err = str(e)
+
+    # 3. Direct Stream URL Fallback (-g) if local merge failed
+    try:
+        g_fmt = "ba/b" if extract_type == "audio" else "18/best"
+        g_res = subprocess.run(
+            [
+                "yt-dlp", "-g", "-f", g_fmt,
+                "--extractor-args", "youtube:player_client=web_embedded,ios",
+                "--no-check-certificates",
+                "--geo-bypass",
                 url
             ],
             capture_output=True, text=True, timeout=12
         )
-        if t_res.returncode == 0 and t_res.stdout.strip():
-            title = t_res.stdout.strip().split('\n')[0]
-    except Exception:
-        pass
-
-    # 2. Command builder based on format
-    if extract_type == "audio":
-        cmd = [
-            "yt-dlp",
-            "--extractor-args", "youtube:player_client=android,ios",
-            "--no-check-certificates",
-            "--geo-bypass",
-            "-x", "--audio-format", "mp3",
-            "--audio-quality", "192k",
-            "-o", out_tmpl,
-            "--no-playlist",
-            url
-        ]
-    else:
-        cmd = [
-            "yt-dlp",
-            "--extractor-args", "youtube:player_client=android,ios",
-            "--no-check-certificates",
-            "--geo-bypass",
-            "-f", "18/best[ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
-            "--merge-output-format", "mp4",
-            "-o", out_tmpl,
-            "--no-playlist",
-            url
-        ]
-
-    # 3. Primary Download Attempt (Android / iOS App Client)
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
-        matches = glob.glob(f"{MEDIA_DIR}/{file_id}.*")
-        
-        # 4. Fallback Attempt (Mobile Web / TV Client) if first client failed
-        if not matches:
-            fallback_client = "mweb,tv_embedded"
-            if extract_type == "audio":
-                fb_cmd = [
-                    "yt-dlp",
-                    "--extractor-args", f"youtube:player_client={fallback_client}",
-                    "--no-check-certificates",
-                    "--geo-bypass",
-                    "-x", "--audio-format", "mp3",
-                    "-o", out_tmpl,
-                    "--no-playlist",
-                    url
-                ]
-            else:
-                fb_cmd = [
-                    "yt-dlp",
-                    "--extractor-args", f"youtube:player_client={fallback_client}",
-                    "--no-check-certificates",
-                    "--geo-bypass",
-                    "-f", "18/best[ext=mp4]/best",
-                    "-o", out_tmpl,
-                    "--no-playlist",
-                    url
-                ]
-            subprocess.run(fb_cmd, capture_output=True, text=True, timeout=45)
-            matches = glob.glob(f"{MEDIA_DIR}/{file_id}.*")
-
-        if matches:
-            final_file = matches[0]
-            size = os.path.getsize(final_file)
-            filename = os.path.basename(final_file)
-            return {
-                "success": True,
-                "title": title,
-                "media_file": filename,
-                "size_bytes": size
-            }
-        else:
-            # 5. Ultimate Fallback: Direct Stream URL (-g)
-            g_fmt = "ba/b" if extract_type == "audio" else "18/best"
-            g_res = subprocess.run(
-                [
-                    "yt-dlp", "-g", "-f", g_fmt,
-                    "--extractor-args", "youtube:player_client=android,ios,mweb",
-                    "--no-check-certificates",
-                    "--geo-bypass",
-                    url
-                ],
-                capture_output=True, text=True, timeout=12
-            )
-            if g_res.returncode == 0 and g_res.stdout.strip():
-                direct_stream = g_res.stdout.strip().split('\n')[0]
+        if g_res.returncode == 0 and g_res.stdout.strip():
+            stream_url = g_res.stdout.strip().split('\n')[0].strip()
+            if stream_url.startswith("http"):
                 return {
                     "success": True,
                     "title": title,
-                    "video_url": direct_stream,
-                    "download_url": direct_stream
+                    "video_url": stream_url,
+                    "download_url": stream_url,
+                    "size_bytes": 0
                 }
+    except Exception:
+        pass
 
-            err_msg = res.stderr.strip()[:250] if res.stderr else "Download failed"
-            return {"success": False, "error": err_msg}
-
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    return {"success": False, "error": last_err or "Failed to download media"}
 
 def scrape_terabox(url):
     title = "TeraBox Video"

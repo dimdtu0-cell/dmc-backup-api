@@ -15,26 +15,38 @@ os.makedirs(MEDIA_DIR, exist_ok=True)
 def download_youtube(url, extract_type="video"):
     """
     Downloads YouTube video/audio directly on the runner with 1Gbps speed.
-    Bypasses Google Video IP-lock completely by outputting clean MP4/MP3.
+    Bypasses Google Video IP-lock & Bot-Check completely by impersonating Android/iOS client.
     """
     file_id = str(uuid.uuid4())[:10]
     out_tmpl = f"{MEDIA_DIR}/{file_id}.%(ext)s"
 
     title = "YouTube Video"
+    
+    # 1. Title Extraction with Android App client (No Bot Check)
     try:
         t_res = subprocess.run(
-            ["yt-dlp", "--extractor-args", "youtube:player_client=android,web", "--get-title", url],
-            capture_output=True, text=True, timeout=10
+            [
+                "yt-dlp",
+                "--extractor-args", "youtube:player_client=android,ios",
+                "--no-check-certificates",
+                "--geo-bypass",
+                "--get-title",
+                url
+            ],
+            capture_output=True, text=True, timeout=12
         )
         if t_res.returncode == 0 and t_res.stdout.strip():
             title = t_res.stdout.strip().split('\n')[0]
     except Exception:
         pass
 
+    # 2. Command builder based on format
     if extract_type == "audio":
         cmd = [
             "yt-dlp",
-            "--extractor-args", "youtube:player_client=android,web",
+            "--extractor-args", "youtube:player_client=android,ios",
+            "--no-check-certificates",
+            "--geo-bypass",
             "-x", "--audio-format", "mp3",
             "--audio-quality", "192k",
             "-o", out_tmpl,
@@ -44,17 +56,49 @@ def download_youtube(url, extract_type="video"):
     else:
         cmd = [
             "yt-dlp",
-            "--extractor-args", "youtube:player_client=android,web",
-            "-f", "18/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--extractor-args", "youtube:player_client=android,ios",
+            "--no-check-certificates",
+            "--geo-bypass",
+            "-f", "18/best[ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
             "--merge-output-format", "mp4",
             "-o", out_tmpl,
             "--no-playlist",
             url
         ]
 
+    # 3. Primary Download Attempt (Android / iOS App Client)
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
         matches = glob.glob(f"{MEDIA_DIR}/{file_id}.*")
+        
+        # 4. Fallback Attempt (Mobile Web / TV Client) if first client failed
+        if not matches:
+            fallback_client = "mweb,tv_embedded"
+            if extract_type == "audio":
+                fb_cmd = [
+                    "yt-dlp",
+                    "--extractor-args", f"youtube:player_client={fallback_client}",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    "-x", "--audio-format", "mp3",
+                    "-o", out_tmpl,
+                    "--no-playlist",
+                    url
+                ]
+            else:
+                fb_cmd = [
+                    "yt-dlp",
+                    "--extractor-args", f"youtube:player_client={fallback_client}",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    "-f", "18/best[ext=mp4]/best",
+                    "-o", out_tmpl,
+                    "--no-playlist",
+                    url
+                ]
+            subprocess.run(fb_cmd, capture_output=True, text=True, timeout=45)
+            matches = glob.glob(f"{MEDIA_DIR}/{file_id}.*")
+
         if matches:
             final_file = matches[0]
             size = os.path.getsize(final_file)
@@ -66,8 +110,30 @@ def download_youtube(url, extract_type="video"):
                 "size_bytes": size
             }
         else:
+            # 5. Ultimate Fallback: Direct Stream URL (-g)
+            g_fmt = "ba/b" if extract_type == "audio" else "18/best"
+            g_res = subprocess.run(
+                [
+                    "yt-dlp", "-g", "-f", g_fmt,
+                    "--extractor-args", "youtube:player_client=android,ios,mweb",
+                    "--no-check-certificates",
+                    "--geo-bypass",
+                    url
+                ],
+                capture_output=True, text=True, timeout=12
+            )
+            if g_res.returncode == 0 and g_res.stdout.strip():
+                direct_stream = g_res.stdout.strip().split('\n')[0]
+                return {
+                    "success": True,
+                    "title": title,
+                    "video_url": direct_stream,
+                    "download_url": direct_stream
+                }
+
             err_msg = res.stderr.strip()[:250] if res.stderr else "Download failed"
             return {"success": False, "error": err_msg}
+
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -219,7 +285,7 @@ def scrape_diskwala(url):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 Chrome/120.0.6099.210 Mobile Safari/537.36",
+            user_agent="Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 Chrome/120.0.0.6099.210 Mobile Safari/537.36",
             viewport={"width": 412, "height": 915}
         )
         page = context.new_page()

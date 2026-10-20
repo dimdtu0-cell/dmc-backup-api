@@ -6,7 +6,7 @@ const app = express();
 const PORT = 3000;
 
 app.get('/', (req, res) => {
-    res.send('👑 DMC Backup Playwright & yt-dlp API is LIVE!');
+    res.send('👑 DMC Backup Playwright & yt-dlp API is LIVE on Cloudflare!');
 });
 
 app.get('/api/info', (req, res) => {
@@ -14,25 +14,28 @@ app.get('/api/info', (req, res) => {
     const type = req.query.type || 'video';
     if (!videoUrl) return res.status(400).json({ error: 'Missing url parameter' });
 
-    execFile('python3', ['extract_pw.py', videoUrl, type], { timeout: 60000 }, (error, stdout) => {
+    execFile('python3', ['extract_pw.py', videoUrl, type], { timeout: 60000 }, (error, stdout, stderr) => {
         if (error) {
-            console.error("Extractor error:", error.message);
+            console.error("Extractor error:", error.message, "Stderr:", stderr);
             return res.status(500).json({ error: 'Extractor execution failed' });
         }
         try {
-            const data = JSON.parse(stdout.trim());
+            const lines = stdout.trim().split('\n');
+            const jsonLine = lines.reverse().find(l => l.trim().startsWith('{') && l.trim().endsWith('}'));
+            if (!jsonLine) throw new Error("No JSON found in extractor output: " + stdout);
+            
+            const data = JSON.parse(jsonLine);
             if (!data.video_url) {
                 return res.status(404).json({ error: data.error || 'Stream not found' });
             }
             const host = req.headers.host;
-            // Includes bypass-tunnel-reminder query param to guarantee media stream without HTML reminder
-            const streamUrl = `https://${host}/stream?url=${encodeURIComponent(data.video_url)}&type=${type}&bypass-tunnel-reminder=true`;
+            const streamUrl = `https://${host}/stream?url=${encodeURIComponent(data.video_url)}&type=${type}`;
             res.json({
                 title: data.title || (type === 'audio' ? 'Audio Track' : 'YouTube Video'),
                 download_url: streamUrl
             });
         } catch (err) {
-            console.error("JSON parse error:", err.message, "Stdout:", stdout);
+            console.error("JSON parse error:", err.message, "Stdout was:", stdout);
             res.status(500).json({ error: 'Invalid response from extractor' });
         }
     });

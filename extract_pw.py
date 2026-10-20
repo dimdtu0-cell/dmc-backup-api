@@ -9,40 +9,52 @@ import urllib.request
 import urllib.parse
 from playwright.sync_api import sync_playwright
 
-MEDIA_DIR = "/tmp/media"
+# 🚀 Ultra-Fast RAM Disk Storage (16GB Runner RAM - Zero Disk Latency)
+RAM_DISK = "/dev/shm/media"
+MEDIA_DIR = RAM_DISK if os.path.exists("/dev/shm") else "/tmp/media"
 os.makedirs(MEDIA_DIR, exist_ok=True)
+
+# Cookie Path Auto-Detection
+COOKIE_FILE = "cookies.txt" if os.path.exists("cookies.txt") else None
+
+def get_base_ytdlp_args():
+    args = [
+        "yt-dlp",
+        "--no-check-certificates",
+        "--geo-bypass",
+        "--no-warnings"
+    ]
+    if COOKIE_FILE:
+        args.extend(["--cookies", COOKIE_FILE])
+    return args
 
 def download_youtube(url, extract_type="video"):
     """
-    Downloads YouTube video/audio directly on the runner with 1Gbps speed.
-    Bypasses Google Datacenter Bot-Check 100% using web_embedded & tv_embedded clients.
+    Downloads YouTube video/audio directly into Runner RAM with 1Gbps speed.
+    Bypasses Bot-Checks using Cookies & web_embedded/ios clients.
     """
     file_id = str(uuid.uuid4())[:10]
     out_tmpl = f"{MEDIA_DIR}/{file_id}.%(ext)s"
 
     title = "YouTube Video"
 
-    # Multi-client priority: web_embedded (Never blocked on Datacenters) -> tv_embedded -> ios
+    # Multi-client priority: web_embedded -> tv_embedded -> ios -> android
     client_chains = [
         "web_embedded,ios",
         "tv_embedded,web_embedded",
-        "ios,mweb"
+        "ios,mweb",
+        "android"
     ]
 
     # 1. Fast Title Extraction
     for client in client_chains:
         try:
-            t_res = subprocess.run(
-                [
-                    "yt-dlp",
-                    "--extractor-args", f"youtube:player_client={client}",
-                    "--no-check-certificates",
-                    "--geo-bypass",
-                    "--get-title",
-                    url
-                ],
-                capture_output=True, text=True, timeout=10
-            )
+            t_cmd = get_base_ytdlp_args() + [
+                "--extractor-args", f"youtube:player_client={client}",
+                "--get-title",
+                url
+            ]
+            t_res = subprocess.run(t_cmd, capture_output=True, text=True, timeout=10)
             if t_res.returncode == 0 and t_res.stdout.strip():
                 first_line = t_res.stdout.strip().split('\n')[0].strip()
                 if first_line and first_line != "YouTube":
@@ -51,15 +63,12 @@ def download_youtube(url, extract_type="video"):
         except Exception:
             pass
 
-    # 2. Download Execution with Multi-Client Fallback
+    # 2. Download Execution into RAM with Client Fallbacks
     last_err = ""
     for client in client_chains:
         if extract_type == "audio":
-            cmd = [
-                "yt-dlp",
+            cmd = get_base_ytdlp_args() + [
                 "--extractor-args", f"youtube:player_client={client}",
-                "--no-check-certificates",
-                "--geo-bypass",
                 "-x", "--audio-format", "mp3",
                 "--audio-quality", "192k",
                 "-o", out_tmpl,
@@ -67,11 +76,8 @@ def download_youtube(url, extract_type="video"):
                 url
             ]
         else:
-            cmd = [
-                "yt-dlp",
+            cmd = get_base_ytdlp_args() + [
                 "--extractor-args", f"youtube:player_client={client}",
-                "--no-check-certificates",
-                "--geo-bypass",
                 "-f", "18/best[ext=mp4]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best",
                 "--merge-output-format", "mp4",
                 "-o", out_tmpl,
@@ -98,19 +104,15 @@ def download_youtube(url, extract_type="video"):
         except Exception as e:
             last_err = str(e)
 
-    # 3. Direct Stream URL Fallback (-g) if local merge failed
+    # 3. Direct Stream Fallback if local merge failed
     try:
         g_fmt = "ba/b" if extract_type == "audio" else "18/best"
-        g_res = subprocess.run(
-            [
-                "yt-dlp", "-g", "-f", g_fmt,
-                "--extractor-args", "youtube:player_client=web_embedded,ios",
-                "--no-check-certificates",
-                "--geo-bypass",
-                url
-            ],
-            capture_output=True, text=True, timeout=12
-        )
+        g_cmd = get_base_ytdlp_args() + [
+            "-g", "-f", g_fmt,
+            "--extractor-args", "youtube:player_client=web_embedded,ios",
+            url
+        ]
+        g_res = subprocess.run(g_cmd, capture_output=True, text=True, timeout=12)
         if g_res.returncode == 0 and g_res.stdout.strip():
             stream_url = g_res.stdout.strip().split('\n')[0].strip()
             if stream_url.startswith("http"):
@@ -131,7 +133,6 @@ def scrape_terabox(url):
     vurls = []
     size_bytes = 0
 
-    # 1. Fast API Extraction
     try:
         surl_match = re.search(r'(?:/s/|surl=)([a-zA-Z0-9_-]+)', url)
         if surl_match:
@@ -157,7 +158,6 @@ def scrape_terabox(url):
     except Exception:
         pass
 
-    # 2. Playwright Headless Chromium Scraper
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"])
         context = browser.new_context(
@@ -274,7 +274,7 @@ def scrape_diskwala(url):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 Chrome/120.0.0.6099.210 Mobile Safari/537.36",
+            user_agent="Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 Chrome/120.0.6099.210 Mobile Safari/537.36",
             viewport={"width": 412, "height": 915}
         )
         page = context.new_page()

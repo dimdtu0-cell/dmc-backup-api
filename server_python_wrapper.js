@@ -1,15 +1,39 @@
 const express = require('express');
 const { exec } = require('child_process');
-const fetch = require('node-fetch');
+const path = require('path');
+const fs = require('fs');
 const app = express();
 
 app.use(express.json());
 
-// Helper: Python extractor process එක call කිරීම
+const MEDIA_DIR = '/tmp/media';
+if (!fs.existsSync(MEDIA_DIR)) {
+    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+}
+
+// 1. Playable Static Media Server (Serves pure MP4/MP3 to WhatsApp)
+app.use('/media', express.static(MEDIA_DIR));
+
+// 2. Auto Cleanup: Delete files older than 10 minutes
+setInterval(() => {
+    try {
+        const files = fs.readdirSync(MEDIA_DIR);
+        const now = Date.now();
+        files.forEach(file => {
+            const filePath = path.join(MEDIA_DIR, file);
+            const stats = fs.statSync(filePath);
+            if (now - stats.mtimeMs > 10 * 60 * 1000) {
+                fs.unlinkSync(filePath);
+            }
+        });
+    } catch (e) {}
+}, 5 * 60 * 1000);
+
+// Helper to execute Python extractor
 function runExtractor(mode, url, opt = 'video') {
     return new Promise((resolve) => {
         const cmd = `python3 extract_pw.py "${mode}" "${url}" "${opt}"`;
-        exec(cmd, { timeout: 50000, maxBuffer: 15 * 1024 * 1024 }, (error, stdout, stderr) => {
+        exec(cmd, { timeout: 60000, maxBuffer: 15 * 1024 * 1024 }, (error, stdout, stderr) => {
             if (error) {
                 console.error(`[Extractor Error] Mode: ${mode} -`, stderr || error.message);
             }
@@ -28,18 +52,28 @@ function runExtractor(mode, url, opt = 'video') {
     });
 }
 
-// 1. YouTube Info Route (Video / Audio)
+// 3. YouTube Route: Returns direct playable file URL over Cloudflare
 app.get('/api/info', async (req, res) => {
     const url = req.query.url;
     const type = req.query.type || 'video';
     if (!url) return res.status(400).json({ success: false, error: 'URL query parameter is required' });
 
-    console.log(`📡 [YouTube Request] Type: ${type} | URL: ${url}`);
+    console.log(`📡 [YouTube Request] Downloading ${type} for: ${url}`);
     const data = await runExtractor('youtube', url, type);
+
+    if (data && data.success && data.media_file) {
+        const host = req.headers['x-forwarded-host'] || req.headers['host'];
+        const proto = req.headers['x-forwarded-proto'] || 'https';
+        const fileUrl = `${proto}://${host}/media/${data.media_file}`;
+
+        data.download_url = fileUrl;
+        data.video_url = fileUrl;
+    }
+
     res.json(data);
 });
 
-// 2. TeraBox Route
+// 4. TeraBox Route
 app.get('/api/terabox', async (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ success: false, error: 'URL query parameter is required' });
@@ -49,7 +83,7 @@ app.get('/api/terabox', async (req, res) => {
     res.json(data);
 });
 
-// 3. DiskWala Route
+// 5. DiskWala Route
 app.get('/api/diskwala', async (req, res) => {
     const url = req.query.url;
     if (!url) return res.status(400).json({ success: false, error: 'URL query parameter is required' });
@@ -59,38 +93,13 @@ app.get('/api/diskwala', async (req, res) => {
     res.json(data);
 });
 
-// 4. Direct Streaming Proxy Route (WhatsApp streaming support)
-app.get('/stream', async (req, res) => {
-    const streamUrl = req.query.url;
-    if (!streamUrl) return res.status(400).send('Stream URL required');
-
-    try {
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        };
-        if (req.headers.range) {
-            headers['Range'] = req.headers.range;
-        }
-
-        const streamResponse = await fetch(streamUrl, { headers });
-        res.status(streamResponse.status);
-        for (const [k, v] of streamResponse.headers.entries()) {
-            res.setHeader(k, v);
-        }
-        streamResponse.body.pipe(res);
-    } catch (err) {
-        console.error('Stream Proxy Error:', err.message);
-        if (!res.headersSent) res.status(500).send(err.message);
-    }
-});
-
-// 5. Health Check & Live Runner Status Route
+// 6. Health Check Route
 app.get(['/', '/health'], (req, res) => {
     res.json({
         status: 'online',
-        service: 'DMC™ Backup Downloader Runner',
+        service: 'DMC™ Backup Downloader Runner (Fast Media Server)',
         engines: {
-            youtube: 'yt-dlp + Playwright Chromium',
+            youtube: 'yt-dlp + Android Direct Media Server',
             terabox: 'Fast API + Playwright Chromium',
             diskwala: 'Playwright Chromium Mobile/Desktop'
         },

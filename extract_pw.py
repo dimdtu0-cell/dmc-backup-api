@@ -44,25 +44,29 @@ def download_youtube_fast_stream(url, extract_type="video"):
             api_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         )
-        with urllib.request.urlopen(req, timeout=14) as response:
+        with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             if data.get("success") and data.get("result") and data["result"].get("download_url"):
                 res = data["result"]
                 dl_url = res["download_url"]
                 title = res.get("title", "YouTube Video")
                 
+                # If IP-bound googlevideo URL, skip to yt-dlp Android to avoid 403/timeout
+                if "googlevideo.com" in dl_url:
+                    return None
+
                 file_id = str(uuid.uuid4())[:10]
                 ext = "mp3" if extract_type == "audio" else "mp4"
                 out_file = f"{MEDIA_DIR}/{file_id}.{ext}"
 
-                # Download file directly into Runner storage at 1Gbps speed
+                # Download file directly into Runner storage at 1Gbps speed with 512KB chunks
                 dl_req = urllib.request.Request(
                     dl_url,
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
                 )
-                with urllib.request.urlopen(dl_req, timeout=45) as dl_resp, open(out_file, 'wb') as f_out:
+                with urllib.request.urlopen(dl_req, timeout=120) as dl_resp, open(out_file, 'wb') as f_out:
                     while True:
-                        chunk = dl_resp.read(64 * 1024)
+                        chunk = dl_resp.read(512 * 1024)
                         if not chunk:
                             break
                         f_out.write(chunk)
@@ -79,7 +83,7 @@ def download_youtube_fast_stream(url, extract_type="video"):
     return None
 
 # ══════════════════════════════════════════════════════════════════
-# 👑 ENGINE 2: MULTI-CLIENT YT-DLP (ANDROID / MWEB BOT BYPASS)
+# 👑 ENGINE 2: MULTI-CLIENT YT-DLP (ANDROID / MWEB BOT BYPASS & MOVIES)
 # ══════════════════════════════════════════════════════════════════
 def download_youtube_ytdlp(url, extract_type="video"):
     file_id = str(uuid.uuid4())[:10]
@@ -95,6 +99,7 @@ def download_youtube_ytdlp(url, extract_type="video"):
             "--no-check-certificates",
             "--geo-bypass",
             "--no-playlist",
+            "--concurrent-fragments", "5",
             "--no-warnings"
         ]
         if COOKIE_FILE:
@@ -104,20 +109,30 @@ def download_youtube_ytdlp(url, extract_type="video"):
             cmd.extend(["-x", "--audio-format", "mp3", "--audio-quality", "192k", "-o", out_tmpl, url])
         else:
             cmd.extend([
-                "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/18/best",
+                "-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/18/best",
                 "--merge-output-format", "mp4",
                 "-o", out_tmpl,
                 url
             ])
 
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
             matches = glob.glob(f"{MEDIA_DIR}/{file_id}.*")
             if matches:
                 final_f = matches[0]
+                
+                title = "YouTube Video"
+                try:
+                    t_cmd = ["yt-dlp", "--get-title", "--no-playlist", url]
+                    t_res = subprocess.run(t_cmd, capture_output=True, text=True, timeout=8)
+                    if t_res.returncode == 0 and t_res.stdout.strip():
+                        title = t_res.stdout.strip().split('\n')[0]
+                except Exception:
+                    pass
+
                 return {
                     "success": True,
-                    "title": "YouTube Video",
+                    "title": title,
                     "media_file": os.path.basename(final_f),
                     "size_bytes": os.path.getsize(final_f)
                 }
@@ -247,7 +262,7 @@ def download_youtube_playwright(url, extract_type="video"):
                         "-c", "copy",
                         out_file
                     ]
-            subprocess.run(ff_cmd, capture_output=True, text=True, timeout=60)
+            subprocess.run(ff_cmd, capture_output=True, text=True, timeout=240)
             if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
                 return {
                     "success": True,
@@ -266,7 +281,7 @@ def download_youtube_playwright(url, extract_type="video"):
 def download_youtube(url, extract_type="video"):
     """
     1. Primary: Fast Decentralized Stream Engine (1-2s CDN direct download)
-    2. Secondary: yt-dlp with Android Client (Datacenter bot-check bypass)
+    2. Secondary: yt-dlp with Android Client (Datacenter bot-check bypass & 1080p Movies)
     3. Tertiary: Playwright Headless Chromium (Real browser direct stream capture)
     4. Fallback: Direct stream link (-g)
     """
@@ -275,7 +290,7 @@ def download_youtube(url, extract_type="video"):
     if fast_res and fast_res.get("success"):
         return fast_res
 
-    # 2. yt-dlp Multi-Client (Android / MWeb)
+    # 2. yt-dlp Multi-Client (Android / MWeb / Movies)
     yt_res = download_youtube_ytdlp(url, extract_type)
     if yt_res and yt_res.get("success"):
         return yt_res
@@ -344,7 +359,7 @@ def scrape_terabox(url):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"])
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Linux; Android 10; SM-G975F) AppleWebKit/537.36 Chrome/120.0.0.6099.210 Mobile Safari/537.36",
             viewport={"width": 1280, "height": 720}
         )
         page = context.new_page()
